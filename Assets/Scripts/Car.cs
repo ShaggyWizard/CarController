@@ -4,7 +4,6 @@ using UnityEngine;
 
 public class Car : MonoBehaviour
 {
-
     [Header("Car Settings")]
     [SerializeField] private float _maxSpeed;
     [SerializeField] private float _timeToMaxSpeed, _maxSpeedModifyer, _timeToModify;
@@ -15,104 +14,90 @@ public class Car : MonoBehaviour
     [SerializeField] private Rigidbody _rigidbody;
     [SerializeField] private WheelCollider _frontLeftWheelCollider, _frontRightWheelCollider;
     [SerializeField] private WheelCollider _rearLeftWheelCollider, _rearRightWheelCollider;
-    [SerializeField] private Transform _frontLeftWheelTransform, _frontRightWheelTransform;
-    [SerializeField] private Transform _rearLeftWheelTransform, _rearRightWheelTransform;
 
 
     public event Action<float> OnSpeedChange;
     public float MaxSpeed => _maxSpeed;
+
     public float Speed { get; private set; }
 
 
+    private float _maxSpeedDelta;
+    private float _targetSpeed;
     private float _lastModifyedSpeedLimit;
     private float _deceleration;
     private bool _lastUpdateForward;
-    private bool _lastUpdateInAir;
     private float _horizontalInput, _verticalInput;
     private float _currentSteerAngle;
     private bool _inAir => !_rearLeftWheelCollider.isGrounded && !_rearRightWheelCollider.isGrounded;
 
+
+    private void Awake()
+    {
+        _maxSpeedDelta = _maxSpeed / _timeToMaxSpeed;
+    }
     private void FixedUpdate()
     {
         GetInput();
         CalculateSpeed();
         HandleMotor();
         HandleSteering();
-        UpdateWheels();
         OnSpeedChange?.Invoke(Speed);
-        if (_inAir)
-            _lastUpdateInAir = true;
     }
 
-    
+
     public void Boost(Vector3 direction)
     {
-        Speed += Speed * Vector3.Dot(direction, transform.forward.normalized);
+        var beforeBoost = _targetSpeed;
+        _targetSpeed += _targetSpeed * Vector3.Dot(direction, transform.forward.normalized);
+        Debug.Log($"Boosted from: {beforeBoost} to: {_targetSpeed} dot: {Vector3.Dot(direction.normalized, transform.forward.normalized)}");
     }
-
-
     private void CalculateSpeed()
     {
-        if (_lastUpdateInAir && _rearLeftWheelCollider.isGrounded && _rearRightWheelCollider.isGrounded)
+        if (_verticalInput ==  0)
         {
-            Speed = Vector3.Scale(transform.forward, _rigidbody.velocity).magnitude;
-        }
-        if (_verticalInput == 0)
-        {
-            _lastUpdateForward = true;
-            if (Speed > 0)
-                Speed = Mathf.Max(0, Speed - _defaultDeceleration * Time.fixedDeltaTime);
-            else if (Speed < 0)
-                Speed = Mathf.Min(0, Speed + _defaultDeceleration * Time.fixedDeltaTime);
+            _targetSpeed = 0;
         }
         else if (_verticalInput > 0)
         {
-            if (_inAir && Speed > 0)
+            if (_inAir && _targetSpeed > 0)
             {
                 return;
             }
-            _lastUpdateForward = true;
-            var acceleration = _maxSpeed / _timeToMaxSpeed;
-            var modifyedMaxSpeed = _lastModifyedSpeedLimit * _maxSpeedModifyer;
-
-            if (Speed > _maxSpeed)
+            if (Speed >= _maxSpeed)
             {
-                acceleration = (modifyedMaxSpeed - _lastModifyedSpeedLimit) / _timeToModify;
+                var modifyedMaxSpeed = _lastModifyedSpeedLimit * _maxSpeedModifyer;
+                var acceleration = (modifyedMaxSpeed - _lastModifyedSpeedLimit) / _timeToModify;
+                _targetSpeed += acceleration * _verticalInput * Time.fixedDeltaTime;
+                if (_targetSpeed > modifyedMaxSpeed)
+                {
+                    _lastModifyedSpeedLimit = modifyedMaxSpeed;
+                }
             }
             else
             {
                 _lastModifyedSpeedLimit = _maxSpeed;
-                modifyedMaxSpeed = _lastModifyedSpeedLimit * _maxSpeedModifyer;
-            }
-
-            Speed += acceleration * _verticalInput * Time.fixedDeltaTime;
-
-            //step up
-            if (Speed > modifyedMaxSpeed)
-            {
-                _lastModifyedSpeedLimit = modifyedMaxSpeed;
+                _targetSpeed = _maxSpeed;
             }
         }
         else
         {
-            if (_inAir && Speed < 0)
+            if (_inAir && _targetSpeed < 0)
             {
                 return;
             }
             if (_lastUpdateForward)
             {
-                _deceleration = Speed / _timeToStop;
+                _deceleration = _targetSpeed / _timeToStop;
             }
 
-            if (Speed > 0)
-                Speed -= _deceleration * Time.fixedDeltaTime;
+            if (_targetSpeed > 0)
+                _targetSpeed -= _deceleration * Time.fixedDeltaTime;
             else
-                Speed += _backwardsAcceleration * _verticalInput * Time.fixedDeltaTime;
+                _targetSpeed += _backwardsAcceleration * _verticalInput * Time.fixedDeltaTime;
 
             _lastUpdateForward = false;
         }
-
-
     }
     private void GetInput()
     {
@@ -127,28 +112,16 @@ public class Car : MonoBehaviour
             return;
         }
 
+        var currentGravity = Vector3.Project(_rigidbody.velocity, -transform.up);
+        var currentSpeed = Vector3.Dot(_rigidbody.velocity, transform.forward);
+        Speed = Mathf.MoveTowards(currentSpeed, _targetSpeed, _maxSpeedDelta * Time.fixedDeltaTime);
         _rigidbody.velocity = transform.forward * Speed;
-        _rigidbody.velocity += Physics.gravity * Time.fixedDeltaTime;
+        _rigidbody.velocity += currentGravity + Physics.gravity * Time.fixedDeltaTime;
     }
     private void HandleSteering()
     {
         _currentSteerAngle = _maxSteerAngle * _horizontalInput;
         _frontLeftWheelCollider.steerAngle = _currentSteerAngle;
         _frontRightWheelCollider.steerAngle = _currentSteerAngle;
-    }
-    private void UpdateWheels()
-    {
-        UpdateSingleWheel(_frontLeftWheelCollider, _frontLeftWheelTransform);
-        UpdateSingleWheel(_frontRightWheelCollider, _frontRightWheelTransform);
-        UpdateSingleWheel(_rearRightWheelCollider, _rearRightWheelTransform);
-        UpdateSingleWheel(_rearLeftWheelCollider, _rearLeftWheelTransform);
-    }
-    private void UpdateSingleWheel(WheelCollider wheelCollider, Transform wheelTransform)
-    {
-        Vector3 pos;
-        Quaternion rot;
-        wheelCollider.GetWorldPose(out pos, out rot);
-        wheelTransform.rotation = rot;
-        wheelTransform.position = pos;
     }
 }
